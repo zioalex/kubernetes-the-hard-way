@@ -1,3 +1,12 @@
+# AWS
+I did this with terraform
+
+     TODO:
+     setup hostname correctly
+     setup eth1 10.0.10.0 newtork on all the hosts - Fix cloud init 
+     configure /etc/hosts with all the hosts
+
+
 # Provisioning Compute Resources
 
 Kubernetes requires a set of machines to host the Kubernetes control plane and the worker nodes where containers are ultimately run. In this lab you will provision the compute resources required for running a secure and highly available Kubernetes cluster across a single [compute zone](https://cloud.google.com/compute/docs/regions-zones/regions-zones).
@@ -223,5 +232,8 @@ $USER@controller-0:~$ exit
 logout
 Connection to XX.XX.XX.XXX closed
 ```
+
+# ADD THE HOSTS list to every nodes in the cluster
+This is needed to allow the correct cluster functions ( Included the connection to the pod )
 
 Next: [Provisioning a CA and Generating TLS Certificates](04-certificate-authority.md)

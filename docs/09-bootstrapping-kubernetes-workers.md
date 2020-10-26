@@ -7,7 +7,7 @@ In this lab you will bootstrap three Kubernetes worker nodes. The following comp
 The commands in this lab must be run on each worker instance: `worker-0`, `worker-1`, and `worker-2`. Login to each worker instance using the `gcloud` command. Example:
 
 ```
-gcloud compute ssh worker-0
+ssh worker-0
 ```
 
 ### Running commands in parallel with tmux
@@ -89,12 +89,18 @@ Install the worker binaries:
 
 Retrieve the Pod CIDR range for the current compute instance:
 
+Following the AWS doc https://docs.aws.amazon.com/eks/latest/userguide/pod-networking.html
+and https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt
+Tha max numbers of pods for a t2.large instance type is 35
+
+Find the POD CIDR in AWS
 ```
-POD_CIDR=$(curl -s -H "Metadata-Flavor: Google" \
-  http://metadata.google.internal/computeMetadata/v1/instance/attributes/pod-cidr)
+   metadata="http://169.254.169.254/latest/meta-data"
+   mac=$(curl -s $metadata/network/interfaces/macs/ | head -n1 | tr -d '/')
+   PODS_CIDR=$(curl -s $metadata/network/interfaces/macs/$mac/subnet-ipv4-cidr-block/)
 ```
 
-Create the `bridge` network configuration file:
+Create the `bridge` network configuration file for the PODS NETWORK:
 
 ```
 cat <<EOF | sudo tee /etc/cni/net.d/10-bridge.conf
@@ -108,7 +114,31 @@ cat <<EOF | sudo tee /etc/cni/net.d/10-bridge.conf
     "ipam": {
         "type": "host-local",
         "ranges": [
-          [{"subnet": "${POD_CIDR}"}]
+          [{"subnet": "${PODS_CIDR}"}]
+        ],
+        "routes": [{"dst": "0.0.0.0/0"}]
+    }
+}
+EOF
+```
+
+Create the `bridge` network configuration file for the SERVICE NETWORK:
+
+```
+SVC_CIDR="10.0.10.0/24"
+
+cat <<EOF | sudo tee /etc/cni/net.d/20-svc-bridge.conf
+{
+    "cniVersion": "0.3.1",
+    "name": "bridge-svc",
+    "type": "bridge",
+    "bridge": "cnio1",
+    "isGateway": true,
+    "ipMasq": true,
+    "ipam": {
+        "type": "host-local",
+        "ranges": [
+          [{"subnet": "${SVC_CIDR}"}]
         ],
         "routes": [{"dst": "0.0.0.0/0"}]
     }
@@ -126,6 +156,7 @@ cat <<EOF | sudo tee /etc/cni/net.d/99-loopback.conf
     "type": "loopback"
 }
 EOF
+
 ```
 
 ### Configure containerd
@@ -201,7 +232,7 @@ authorization:
   mode: Webhook
 clusterDomain: "cluster.local"
 clusterDNS:
-  - "10.32.0.10"
+  - "10.0.10.10"
 podCIDR: "${POD_CIDR}"
 resolvConf: "/run/systemd/resolve/resolv.conf"
 runtimeRequestTimeout: "15m"
@@ -255,7 +286,7 @@ apiVersion: kubeproxy.config.k8s.io/v1alpha1
 clientConnection:
   kubeconfig: "/var/lib/kube-proxy/kubeconfig"
 mode: "iptables"
-clusterCIDR: "10.200.0.0/16"
+clusterCIDR: "10.0.101.0/24"
 EOF
 ```
 
@@ -297,7 +328,7 @@ EOF
 List the registered Kubernetes nodes:
 
 ```
-gcloud compute ssh controller-0 \
+ssh controller-0 \
   --command "kubectl get nodes --kubeconfig admin.kubeconfig"
 ```
 

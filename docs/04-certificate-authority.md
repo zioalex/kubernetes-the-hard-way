@@ -112,7 +112,8 @@ Kubernetes uses a [special-purpose authorization mode](https://kubernetes.io/doc
 Generate a certificate and private key for each Kubernetes worker node:
 
 ```
-for instance in worker-0 worker-1 worker-2; do
+WORKER_LIST="worker-0 worker-1"
+for instance in $WORKER_LIST; do
 cat > ${instance}-csr.json <<EOF
 {
   "CN": "system:node:${instance}",
@@ -132,11 +133,12 @@ cat > ${instance}-csr.json <<EOF
 }
 EOF
 
-EXTERNAL_IP=$(gcloud compute instances describe ${instance} \
-  --format 'value(networkInterfaces[0].accessConfigs[0].natIP)')
+AWS_REGION=eu-west-1
+EXTERNAL_IP=$(aws --region $AWS_REGION ec2 describe-instances --filters "Name=tag:Name,Values=${instance}" \
+   --query  'Reservations[].Instances[].PublicIpAddress' --output text)
 
-INTERNAL_IP=$(gcloud compute instances describe ${instance} \
-  --format 'value(networkInterfaces[0].networkIP)')
+INTERNAL_IP=$(aws --region $AWS_REGION ec2 describe-instances --filters "Name=tag:Name,Values=${instance}" \
+   --query  'Reservations[].Instances[].PrivateIpAddress' --output text)
 
 cfssl gencert \
   -ca=ca.pem \
@@ -299,9 +301,10 @@ Generate the Kubernetes API Server certificate and private key:
 ```
 {
 
-KUBERNETES_PUBLIC_ADDRESS=$(gcloud compute addresses describe kubernetes-the-hard-way \
-  --region $(gcloud config get-value compute/region) \
-  --format 'value(address)')
+AWS_REGION=eu-west-1
+
+KUBERNETES_PUBLIC_ADDRESS=$(aws ec2 --region $AWS_REGION describe-addresses --filters "Name=domain,Values=vpc" \
+   --filters "Name=tag:Role,Values=lb-eip" --query 'Addresses[].PublicIp' --output text)
 
 KUBERNETES_HOSTNAMES=kubernetes,kubernetes.default,kubernetes.default.svc,kubernetes.default.svc.cluster,kubernetes.svc.cluster.local
 
@@ -328,14 +331,14 @@ cfssl gencert \
   -ca=ca.pem \
   -ca-key=ca-key.pem \
   -config=ca-config.json \
-  -hostname=10.32.0.1,10.240.0.10,10.240.0.11,10.240.0.12,${KUBERNETES_PUBLIC_ADDRESS},127.0.0.1,${KUBERNETES_HOSTNAMES} \
+  -hostname=10.0.1.13,10.0.1.191,10.0.101.94,10.0.101.242,${KUBERNETES_PUBLIC_ADDRESS},127.0.0.1,${KUBERNETES_HOSTNAMES},10.0.10.1 \
   -profile=kubernetes \
   kubernetes-csr.json | cfssljson -bare kubernetes
 
 }
 ```
 
-> The Kubernetes API server is automatically assigned the `kubernetes` internal dns name, which will be linked to the first IP address (`10.32.0.1`) from the address range (`10.32.0.0/24`) reserved for internal cluster services during the [control plane bootstrapping](08-bootstrapping-kubernetes-controllers.md#configure-the-kubernetes-api-server) lab.
+> The Kubernetes API server is automatically assigned the `kubernetes` internal dns name, which will be linked to the first IP address (`10.0.10.1`) from the address range (`10.0.10.0/24`) reserved for internal cluster services during the [control plane bootstrapping](08-bootstrapping-kubernetes-controllers.md#configure-the-kubernetes-api-server) lab.
 
 Results:
 
@@ -395,16 +398,18 @@ service-account.pem
 Copy the appropriate certificates and private keys to each worker instance:
 
 ```
-for instance in worker-0 worker-1 worker-2; do
-  gcloud compute scp ca.pem ${instance}-key.pem ${instance}.pem ${instance}:~/
+WORKER_LIST="worker-1 worker-1"
+CONTROLLER_LIST="controller-1 controller-2"
+for instance in $WORKER_LIST; do
+ scp ca.pem ${instance}-key.pem ${instance}.pem ${instance}:~/
 done
 ```
 
 Copy the appropriate certificates and private keys to each controller instance:
 
 ```
-for instance in controller-0 controller-1 controller-2; do
-  gcloud compute scp ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
+for instance in $CONTROLLER_LIST; do
+  scp ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
     service-account-key.pem service-account.pem ${instance}:~/
 done
 ```

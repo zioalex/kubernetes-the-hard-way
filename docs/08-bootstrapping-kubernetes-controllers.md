@@ -1,13 +1,13 @@
 # Bootstrapping the Kubernetes Control Plane
 
-In this lab you will bootstrap the Kubernetes control plane across three compute instances and configure it for high availability. You will also create an external load balancer that exposes the Kubernetes API Servers to remote clients. The following components will be installed on each node: Kubernetes API Server, Scheduler, and Controller Manager.
+In this lab you will bootstrap the Kubernetes control plane across three compute instances and configure it for high availability. The following components will be installed on each node: Kubernetes API Server, Scheduler, and Controller Manager.
 
 ## Prerequisites
 
 The commands in this lab must be run on each controller instance: `controller-0`, `controller-1`, and `controller-2`. Login to each controller instance using the `gcloud` command. Example:
 
 ```
-gcloud compute ssh controller-0
+compute ssh controller-0
 ```
 
 ### Running commands in parallel with tmux
@@ -58,8 +58,7 @@ Install the Kubernetes binaries:
 The instance internal IP address will be used to advertise the API Server to members of the cluster. Retrieve the internal IP address for the current compute instance:
 
 ```
-INTERNAL_IP=$(curl -s -H "Metadata-Flavor: Google" \
-  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
+INTERNAL_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
 ```
 
 Create the `kube-apiserver.service` systemd unit file:
@@ -86,7 +85,7 @@ ExecStart=/usr/local/bin/kube-apiserver \\
   --etcd-cafile=/var/lib/kubernetes/ca.pem \\
   --etcd-certfile=/var/lib/kubernetes/kubernetes.pem \\
   --etcd-keyfile=/var/lib/kubernetes/kubernetes-key.pem \\
-  --etcd-servers=https://10.240.0.10:2379,https://10.240.0.11:2379,https://10.240.0.12:2379 \\
+  --etcd-servers=https://10.0.1.13:2379,https://10.0.1.191:2379 \\
   --event-ttl=1h \\
   --encryption-provider-config=/var/lib/kubernetes/encryption-config.yaml \\
   --kubelet-certificate-authority=/var/lib/kubernetes/ca.pem \\
@@ -95,7 +94,7 @@ ExecStart=/usr/local/bin/kube-apiserver \\
   --kubelet-https=true \\
   --runtime-config='api/all=true' \\
   --service-account-key-file=/var/lib/kubernetes/service-account.pem \\
-  --service-cluster-ip-range=10.32.0.0/24 \\
+  --service-cluster-ip-range=10.0.10.0/24 \\
   --service-node-port-range=30000-32767 \\
   --tls-cert-file=/var/lib/kubernetes/kubernetes.pem \\
   --tls-private-key-file=/var/lib/kubernetes/kubernetes-key.pem \\
@@ -116,6 +115,13 @@ Move the `kube-controller-manager` kubeconfig into place:
 sudo mv kube-controller-manager.kubeconfig /var/lib/kubernetes/
 ```
 
+Find the POD CIDR in AWS
+```
+   metadata="http://169.254.169.254/latest/meta-data"
+   mac=$(curl -s $metadata/network/interfaces/macs/ | head -n1 | tr -d '/')
+   PODS_CIDR=$(curl -s $metadata/network/interfaces/macs/$mac/subnet-ipv4-cidr-block/)
+```
+
 Create the `kube-controller-manager.service` systemd unit file:
 
 ```
@@ -127,7 +133,7 @@ Documentation=https://github.com/kubernetes/kubernetes
 [Service]
 ExecStart=/usr/local/bin/kube-controller-manager \\
   --bind-address=0.0.0.0 \\
-  --cluster-cidr=10.200.0.0/16 \\
+  --cluster-cidr=$PODS_CIDR \\
   --cluster-name=kubernetes \\
   --cluster-signing-cert-file=/var/lib/kubernetes/ca.pem \\
   --cluster-signing-key-file=/var/lib/kubernetes/ca-key.pem \\
@@ -135,7 +141,7 @@ ExecStart=/usr/local/bin/kube-controller-manager \\
   --leader-elect=true \\
   --root-ca-file=/var/lib/kubernetes/ca.pem \\
   --service-account-private-key-file=/var/lib/kubernetes/service-account-key.pem \\
-  --service-cluster-ip-range=10.32.0.0/24 \\
+  --service-cluster-ip-range=10.0.10.0/24 \\
   --use-service-account-credentials=true \\
   --v=2
 Restart=on-failure
@@ -200,6 +206,7 @@ EOF
 > Allow up to 10 seconds for the Kubernetes API Server to fully initialize.
 
 ### Enable HTTP Health Checks
+WITH AWS the NLB can check a TCP endpoint. The follow is not needed.
 
 A [Google Network Load Balancer](https://cloud.google.com/compute/docs/load-balancing/network) will be used to distribute traffic across the three API servers and allow each API server to terminate TLS connections and validate client certificates. The network load balancer only supports HTTP health checks which means the HTTPS endpoint exposed by the API server cannot be used. As a workaround the nginx webserver can be used to proxy HTTP health checks. In this section nginx will be installed and configured to accept HTTP health checks on port `80` and proxy the connections to the API server on `https://127.0.0.1:6443/healthz`.
 
@@ -258,6 +265,9 @@ etcd-1               Healthy   {"health":"true"}
 etcd-2               Healthy   {"health":"true"}
 ```
 
+NOT NEEDED in AWS
+---
+
 Test the nginx HTTP health check proxy:
 
 ```
@@ -288,7 +298,7 @@ In this section you will configure RBAC permissions to allow the Kubernetes API 
 The commands in this section will effect the entire cluster and only need to be run once from one of the controller nodes.
 
 ```
-gcloud compute ssh controller-0
+ssh controller-0
 ```
 
 Create the `system:kube-apiserver-to-kubelet` [ClusterRole](https://kubernetes.io/docs/admin/authorization/rbac/#role-and-clusterrole) with permissions to access the Kubelet API and perform most common tasks associated with managing pods:
@@ -339,6 +349,9 @@ subjects:
 EOF
 ```
 
+In AWS this has been already provisioned with Terraform
+---
+
 ## The Kubernetes Frontend Load Balancer
 
 In this section you will provision an external load balancer to front the Kubernetes API Servers. The `kubernetes-the-hard-way` static IP address will be attached to the resulting load balancer.
@@ -387,9 +400,10 @@ Create the external load balancer network resources:
 Retrieve the `kubernetes-the-hard-way` static IP address:
 
 ```
-KUBERNETES_PUBLIC_ADDRESS=$(gcloud compute addresses describe kubernetes-the-hard-way \
-  --region $(gcloud config get-value compute/region) \
-  --format 'value(address)')
+AWS_REGION=eu-west-1
+KUBERNETES_PUBLIC_ADDRESS=$(aws ec2 --region $AWS_REGION describe-addresses --filters "Name=domain,Values=vpc" \
+   --filters "Name=tag:Role,Values=lb-eip" --query 'Addresses[].PublicIp' --output text)
+
 ```
 
 Make a HTTP request for the Kubernetes version info:
